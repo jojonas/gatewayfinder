@@ -11,11 +11,11 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 	"github.com/mdlayher/arp"
 	"github.com/mdlayher/packet"
 	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
-	"golang.org/x/net/bpf"
 )
 
 const protocolIPv4 = 0x0800
@@ -138,17 +138,14 @@ outer:
 }
 
 func pingViaPeers(iface *net.Interface, dst netip.Addr, arpReplies []arp.Packet) error {
-	filter, err := bpf.Assemble([]bpf.Instruction{
-		bpf.LoadAbsolute{Off: 12, Size: 2},
-		bpf.JumpIf{Cond: bpf.JumpNotEqual, Val: 0x0800, SkipTrue: 3},
-		bpf.LoadAbsolute{Off: 23, Size: 1},
-		bpf.JumpIf{Cond: bpf.JumpNotEqual, Val: 1, SkipTrue: 1},
-		bpf.RetConstant{Val: 4096},
-		bpf.RetConstant{Val: 0},
-	})
+	// filter language: https://www.winpcap.org/docs/docs_40_2/html/group__language.html
+	filterString := "icmp and icmp[icmptype] = icmp-echoreply"
+
+	pcapFilter, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, 1024, filterString)
 	if err != nil {
-		return fmt.Errorf("assemble BPF filter: %w", err)
+		return fmt.Errorf("compile BPF filter %q: %w", filterString, err)
 	}
+	filter := translateBPF(pcapFilter)
 
 	packetconn, err := packet.Listen(iface, packet.Raw, protocolIPv4, &packet.Config{
 		Filter: filter,
