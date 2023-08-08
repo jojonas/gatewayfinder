@@ -9,18 +9,16 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/mdlayher/arp"
-	"github.com/mdlayher/ethernet"
 	"github.com/mdlayher/packet"
 	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
 	"golang.org/x/net/bpf"
-	"golang.org/x/net/icmp"
-	"golang.org/x/net/ipv4"
 )
 
 const protocolIPv4 = 0x0800
-const protocolICMP = 1
 
 func main() {
 	log.SetLevel(log.InfoLevel)
@@ -173,63 +171,44 @@ func pingViaPeers(iface *net.Interface, dst netip.Addr, arpReplies []arp.Packet)
 			continue
 		}
 
+		ethernetLayer := layers.Ethernet{
+			SrcMAC:       arpReply.TargetHardwareAddr,
+			DstMAC:       arpReply.SenderHardwareAddr,
+			EthernetType: layers.EthernetTypeIPv4,
+		}
+
+		ipLayer := layers.IPv4{
+			Version:  4,
+			SrcIP:    arpReply.TargetIP.AsSlice(),
+			DstIP:    dst.AsSlice(),
+			Protocol: layers.IPProtocolICMPv4,
+			TTL:      64,
+		}
+
+		icmpLayer := layers.ICMPv4{
+			TypeCode: layers.CreateICMPv4TypeCode(layers.ICMPv4TypeEchoRequest, 0),
+			Id:       uint16(id),
+			Seq:      uint16(seq + 1),
+		}
+
 		pattern := pingPattern(48)
 		log.Debugf("Pattern: %x", pattern)
 
-		icmpBody := &icmp.Echo{
-			ID:   id,
-			Seq:  seq + 1,
-			Data: pattern,
+		buffer := gopacket.NewSerializeBuffer()
+		options := gopacket.SerializeOptions{
+			FixLengths:       true,
+			ComputeChecksums: true,
 		}
+		gopacket.SerializeLayers(buffer, options,
+			&ethernetLayer,
+			&ipLayer,
+			&icmpLayer,
+			gopacket.Payload(pattern),
+		)
 
-		icmpMessage := &icmp.Message{
-			Type: ipv4.ICMPTypeEcho,
-			Code: 0,
-			Body: icmpBody,
-		}
+		log.Infof("Sending ICMP ping #%d to %s via %s (%s)...", icmpLayer.Seq, dst, ethernetLayer.DstMAC, arpReply.SenderIP)
 
-		icmpBytes, err := icmpMessage.Marshal(nil)
-		if err != nil {
-			return fmt.Errorf("marshal ICMP message: %w", err)
-		}
-
-		ipHeader := ipv4.Header{
-			Version:  4,
-			Len:      20,
-			TotalLen: 20 + len(icmpBytes),
-			TTL:      64,
-			Protocol: protocolICMP,
-			Src:      arpReply.TargetIP.AsSlice(),
-			Dst:      dst.AsSlice(),
-		}
-		ipHeader.Checksum, err = checksum(ipHeader)
-		if err != nil {
-			return fmt.Errorf("calculate IP checksum: %w", err)
-		}
-
-		ipBytes, err := ipHeader.Marshal()
-		if err != nil {
-			return fmt.Errorf("marshal IP header: %w", err)
-		}
-
-		ethernetFrame := &ethernet.Frame{
-			Destination: arpReply.SenderHardwareAddr,
-			Source:      arpReply.TargetHardwareAddr,
-			EtherType:   ethernet.EtherTypeIPv4,
-			Payload:     append(ipBytes, icmpBytes...),
-		}
-
-		ethernetBytes, err := ethernetFrame.MarshalBinary()
-		if err != nil {
-			return fmt.Errorf("marshal Ethernet frame: %w", err)
-		}
-
-		log.Infof("Sending ICMP ping #%d to %s via %s (%s)...", icmpBody.Seq, dst, ethernetFrame.Destination, arpReply.SenderIP)
-		log.Debugf("Ethernet frame: %v", ethernetFrame)
-		log.Debugf("IP header: %s", ipHeader.String())
-		log.Debugf("ICMP message: %v", icmpMessage)
-
-		_, err = packetconn.WriteTo(ethernetBytes, &packet.Addr{HardwareAddr: ethernetFrame.Destination})
+		_, err = packetconn.WriteTo(buffer.Bytes(), &packet.Addr{HardwareAddr: ethernetLayer.DstMAC})
 		if err != nil {
 			return fmt.Errorf("write to PacketConn: %w", err)
 		}
@@ -246,41 +225,28 @@ func pingViaPeers(iface *net.Interface, dst netip.Addr, arpReplies []arp.Packet)
 			return fmt.Errorf("PacketConn.ReadFrom: %w", err)
 		}
 
-		ethernetFrame := new(ethernet.Frame)
-		err = ethernetFrame.UnmarshalBinary(buf[:n])
-		if err != nil {
-			return fmt.Errorf("unmarshal ethernet frame: %w", err)
-		}
+		packet := gopacket.NewPacket(buf[:n], layers.LayerTypeEthernet, gopacket.DecodeOptions{})
 
-		if ethernetFrame.EtherType != ethernet.EtherTypeIPv4 {
-			log.Debugf("ignoring ethernet frame (EtherType: %s)", ethernetFrame.EtherType.String())
+		ethernetLayer, ok := packet.Layer(layers.LayerTypeEthernet).(*layers.Ethernet)
+		if !ok {
+			log.Debugf("Ignoring non-Ethernet packet: %s...", packet)
 			continue
 		}
 
-		ipFrame := new(ipv4.Header)
-		err = ipFrame.Parse(ethernetFrame.Payload)
-		if err != nil {
-			return fmt.Errorf("unmarshal IP header: %w", err)
-		}
-
-		if ipFrame.Protocol != protocolICMP {
-			log.Debugf("ignoring IP packet (protocol: %d)", ipFrame.Protocol)
+		ipLayer, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
+		if !ok {
+			log.Debugf("Ignoring non-IPv4 packet: %s...", packet)
 			continue
 		}
 
-		icmpBytes := ethernetFrame.Payload[ipFrame.Len:]
-		icmpMessage, err := icmp.ParseMessage(ipFrame.Protocol, icmpBytes)
-		if err != nil {
-			return fmt.Errorf("parse ICMP message: %w", err)
+		icmpLayer, ok := packet.Layer(layers.LayerTypeICMPv4).(*layers.ICMPv4)
+		if !ok {
+			log.Debugf("Ignoring non-ICMP packet: %s...", packet)
+			continue
 		}
 
-		if icmpMessage.Type == ipv4.ICMPTypeEchoReply {
-			icmpBody := icmpMessage.Body.(*icmp.Echo)
-			if icmpBody.ID != id {
-				continue
-			}
-
-			log.Infof("Got ICMP echo reply #%d from %s (%s)!", icmpBody.Seq, ethernetFrame.Source, ipFrame.Src)
+		if icmpLayer.TypeCode == layers.CreateICMPv4TypeCode(layers.ICMPv4TypeEchoReply, 0) {
+			log.Infof("Got ICMP echo reply #%d from %s (%s)!", icmpLayer.Seq, ethernetLayer.SrcMAC, ipLayer.SrcIP)
 		}
 	}
 
@@ -296,29 +262,4 @@ func pingPattern(n int) []byte {
 	}
 
 	return padding
-}
-
-func checksum(header ipv4.Header) (int, error) {
-	header.Checksum = 0
-	buf, err := header.Marshal()
-	if err != nil {
-		return 0, err
-	}
-
-	return int(tcpipChecksum(buf, 0)), nil
-}
-
-func tcpipChecksum(data []byte, csum uint32) uint16 {
-	length := len(data) - 1
-	for i := 0; i < length; i += 2 {
-		csum += uint32(data[i]) << 8
-		csum += uint32(data[i+1])
-	}
-	if len(data)%2 == 1 {
-		csum += uint32(data[length]) << 8
-	}
-	for csum > 0xffff {
-		csum = (csum >> 16) + (csum & 0xffff)
-	}
-	return ^uint16(csum)
 }
