@@ -36,7 +36,7 @@ func main() {
 	flag.StringVarP(&flagNetwork, "network", "n", "", "network to scan (default: derived from the interface address)")
 	flag.BoolVarP(&flagVerbose, "verbose", "v", false, "verbose output")
 	flag.BoolVar(&flagShuffle, "shuffle", false, "shuffle peers before pinging")
-	flag.Uint16VarP(&flagPort, "port", "p", 0, "use this TCP port (default: ICMP)")
+	flag.Uint16VarP(&flagPort, "port", "p", 0, "use this TCP port (or 0 for ICMP, which is the default)")
 
 	flag.Parse()
 
