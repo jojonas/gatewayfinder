@@ -23,7 +23,7 @@ The discovery is basically a two-step process:
 ## Building
 
 The application is written in Go and therefore requires a Go compiler.
-Additionally, as the application sends and receives packets using `gopacket`, ti
+Additionally, as the application sends and receives packets using `gopacket`, it
 depends on libpcap. Both dependencies can usually be installed through the
 package manager:
 
