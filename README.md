@@ -15,7 +15,7 @@ INFO[0003] Got ICMP echo reply #33313/1 from 3c:a6:2f:c6:fc:a2 (192.168.179.1)!
 The discovery is basically a two-step process:
 1. *Peer discovery*: The applicaton uses ARP to discovery systems directly
    reachable via Ethernet in the current network.
-2. *Ping*: The application sends out a series of "pings" (ether ICMP or TCP
+2. *Ping*: The application sends out a series of "pings" (either ICMP or TCP
    SYN). The IP header for each ping is identical and specifies a given target
    IP address. The underlying Ethernet-frame is however sent to each of the
    peers discovered in step 1.
