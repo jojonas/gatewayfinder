@@ -14,11 +14,20 @@ INFO[0003] Got ICMP echo reply #33313/1 from 3c:a6:2f:c6:fc:a2 (192.168.179.1)!
 
 The discovery is basically a two-step process:
 1. *Peer discovery*: The applicaton uses ARP to discovery systems directly
-   reachable via Ethernet.
+   reachable via Ethernet in the current network.
 2. *Ping*: The application sends out a series of "pings" (ether ICMP or TCP
    SYN). The IP header for each ping is identical and specifies a given target
    IP address. The underlying Ethernet-frame is however sent to each of the
    peers discovered in step 1.
+
+Note:
+ * The network used when ARP scanning can be configured with `-n`/`--network`.
+ * The ping method (ICMP or TCP port) can be configured with `-p`/`--port`. Use `0` for ICMP.
+ * The target IP address to ping can be configured with `-t`/`--target`, the
+   default is 1.1.1.1, which can be used to discover Internet access.
+
+The documentation for the command-line options can be printed out by setting the
+`--help` command-line option.
 
 ## Building
 
@@ -36,8 +45,7 @@ Building is simple:
 go build .
 ```
 
-The documentation for the command-line options can be printed out by setting the
-`--help` command-line option.
+## Required Privileges
 
 The discovery process uses raw sockets. Therefore it must be either started as
 the `root` user (for example using `sudo`) or you can set the corresponding
