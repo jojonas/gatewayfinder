@@ -50,8 +50,9 @@ go build .
 The discovery process uses raw sockets. Therefore it must be either started as
 the `root` user (for example using `sudo`) or you can set the corresponding
 capabilities on the binary (note that this has to be repeated after
-recompiling):
+recompiling), which allows you to run it as any user:
 
 ```
 sudo setcap cap_net_raw+ep ./gatewayfinder
+./gatewayfinder [...]
 ```
